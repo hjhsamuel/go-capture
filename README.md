@@ -16,7 +16,7 @@
 - Visual Studio 2022 (或支持 C++20 的版本)
 - **Windows SDK 10.0.22621.0 或更高版本** (由于旧版 SDK 的 C++/WinRT 与 C++20 存在兼容性问题，建议使用此版本或更新版本)
 
-## 编译步骤 (使用 MSVC)
+## 编译步骤
 
 推荐在 **Developer PowerShell for VS 2022** 或 **x64 Native Tools Command Prompt for VS 2022** 中执行：
 
@@ -57,6 +57,32 @@ capture.Stop();
 - **采集**: 使用 `Windows.Graphics.Capture` API，支持高性能桌面抓取。
 - **编码**: 使用 Media Foundation 硬件加速编码器 (`CLSID_CMSH264EncoderMFT`)。
 - **颜色转换**: 从 WGC 的 `B8G8R8A8` 格式转换为编码器通用的 `NV12` 格式（实现中建议使用 GPU Video Processor）。
+
+## 测试
+
+### C++
+
+C++ 的测试文件在 `CaptureTest` 目录下，同样，在项目根目录下进行编译：
+
+```powershell
+mkdir build
+cd build
+cmake ..
+cmake --build . --config Release
+```
+
+在编译完成后，在 `build/CaptureTest/Release` 目录下将生成 `CaptureTest.exe` 文件
+
+
+### Golang
+
+golang 通过 CGO 加载 dll 文件，因此需要先完成 dll 文件的编译，具体操作 [参考](https://github.com/hjhsamuel/go-capture#编译步骤)
+
+在编译完成后，请将 dll 文件拷贝至项目根目录下，然后执行：
+
+```powershell
+go run main.go
+```
 
 ## h264
 
