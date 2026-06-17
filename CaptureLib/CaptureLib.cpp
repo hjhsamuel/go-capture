@@ -76,6 +76,12 @@ namespace CaptureLib {
                 return false;
             }
 
+            // Enable multithreaded protection for D3D11 context
+            winrt::com_ptr<ID3D11Multithread> mt;
+            if (SUCCEEDED(m_d3dContext->QueryInterface(IID_PPV_ARGS(mt.put())))) {
+                mt->SetMultithreadProtected(TRUE);
+            }
+
             auto dxgiDevice = m_d3dDevice.as<IDXGIDevice>();
             winrt::com_ptr<IInspectable> inspectable;
             winrt::check_hresult(CreateDirect3D11DeviceFromDXGIDevice(dxgiDevice.get(), inspectable.put()));
@@ -101,17 +107,6 @@ namespace CaptureLib {
         }
 
         bool InitEncoder() {
-            std::cout << "Initializing Encoder..." << std::endl;
-            winrt::com_ptr<IMFAttributes> attributes;
-            winrt::check_hresult(MFCreateAttributes(attributes.put(), 1));
-            winrt::check_hresult(attributes->SetUINT32(MF_READWRITE_ENABLE_HARDWARE_TRANSFORMS, TRUE));
-
-            // We use SinkWriter just to check if H264 is available generally, but MFT is the real deal here.
-            HRESULT hr = MFCreateSinkWriterFromURL(L"dummy.h264", nullptr, attributes.get(), m_sinkWriter.put());
-            if (FAILED(hr)) {
-                std::cerr << "Failed to create SinkWriter: " << std::hex << hr << std::endl;
-            }
-
             return InitMFT();
         }
 
@@ -260,11 +255,19 @@ namespace CaptureLib {
                     std::cerr << "Failed to start capture on dispatcher: " << std::hex << ex.code() << std::endl;
                 }
             });
+
+            // Start worker thread for constant FPS encoding
+            m_workerThread = std::thread(&Impl::WorkerThread, this);
         }
 
         void Stop() {
             std::cout << "Stopping capture session..." << std::endl;
             m_running = false;
+            
+            if (m_workerThread.joinable()) {
+                m_workerThread.join();
+            }
+
             if (m_session) {
                 m_session.Close();
                 m_session = nullptr;
@@ -277,6 +280,12 @@ namespace CaptureLib {
                 m_controller.ShutdownQueueAsync();
                 m_controller = nullptr;
             }
+
+            {
+                std::lock_guard<std::mutex> lock(m_frameMutex);
+                m_cacheTexture = nullptr;
+                m_lastWgcFrame = nullptr;
+            }
         }
 
         void OnFrameArrived(winrt::Windows::Graphics::Capture::Direct3D11CaptureFramePool const& sender, winrt::Windows::Foundation::IInspectable const&) {
@@ -287,11 +296,63 @@ namespace CaptureLib {
             auto surface = frame.Surface();
             auto texture = GetDXGIInterfaceFromObject<ID3D11Texture2D>(surface);
             
-            ProcessFrame(texture.get(), frame.SystemRelativeTime().count());
+            if (texture) {
+                std::lock_guard<std::mutex> lock(m_frameMutex);
+                m_lastWgcFrame = texture;
+            }
         }
 
-        void ProcessFrame(ID3D11Texture2D* texture, uint64_t timestamp) {
+        void WorkerThread() {
+            auto frameDuration = std::chrono::nanoseconds(1000000000ULL / m_fps);
+            auto nextFrameTime = std::chrono::steady_clock::now();
+            uint64_t timestamp = 0;
+
+            while (m_running) {
+                winrt::com_ptr<ID3D11Texture2D> wgcFrame;
+                {
+                    std::lock_guard<std::mutex> lock(m_frameMutex);
+                    wgcFrame = m_lastWgcFrame;
+                }
+
+                if (wgcFrame) {
+                    ProcessFrame(wgcFrame.get(), timestamp);
+                    timestamp += 10000000ULL / m_fps; // 100ns units for MF
+                }
+
+                nextFrameTime += frameDuration;
+                std::this_thread::sleep_until(nextFrameTime);
+            }
+        }
+
+        void ProcessFrame(ID3D11Texture2D* wgcTexture, uint64_t timestamp) {
             if (!m_encoder) return;
+
+            // Protect D3D11 Context
+            winrt::com_ptr<ID3D11Multithread> mt;
+            if (SUCCEEDED(m_d3dContext->QueryInterface(IID_PPV_ARGS(mt.put())))) {
+                mt->Enter();
+            }
+
+            // Copy to cache texture first to ensure stability
+            if (!m_cacheTexture) {
+                D3D11_TEXTURE2D_DESC desc;
+                wgcTexture->GetDesc(&desc);
+                desc.BindFlags = D3D11_BIND_SHADER_RESOURCE | D3D11_BIND_RENDER_TARGET;
+                desc.MiscFlags = 0;
+                desc.Usage = D3D11_USAGE_DEFAULT;
+                desc.CPUAccessFlags = 0;
+                m_d3dDevice->CreateTexture2D(&desc, nullptr, m_cacheTexture.put());
+            }
+
+            if (m_cacheTexture) {
+                m_d3dContext->CopyResource(m_cacheTexture.get(), wgcTexture);
+            }
+
+            ID3D11Texture2D* texture = m_cacheTexture.get();
+            if (!texture) {
+                if (mt) mt->Leave();
+                return;
+            }
 
             HRESULT hr = S_OK;
 
@@ -439,6 +500,10 @@ namespace CaptureLib {
                     break;
                 }
             }
+
+            if (mt) {
+                mt->Leave();
+            }
         }
 
     private:
@@ -457,7 +522,6 @@ namespace CaptureLib {
         winrt::Windows::System::DispatcherQueueController m_controller{ nullptr };
         winrt::Windows::System::DispatcherQueue m_dispatcherQueue{ nullptr };
 
-        winrt::com_ptr<IMFSinkWriter> m_sinkWriter;
         winrt::com_ptr<IMFTransform> m_encoder;
         winrt::com_ptr<IMFTransform> m_converter;
 
@@ -471,6 +535,11 @@ namespace CaptureLib {
         std::atomic<bool> m_closed;
         std::atomic<bool> m_running;
         GUID m_inputFormat;
+
+        std::thread m_workerThread;
+        std::mutex m_frameMutex;
+        winrt::com_ptr<ID3D11Texture2D> m_cacheTexture;
+        winrt::com_ptr<ID3D11Texture2D> m_lastWgcFrame;
     };
 
     std::vector<MonitorInfo> DesktopCapture::EnumerateMonitors() {
@@ -498,4 +567,43 @@ namespace CaptureLib {
     void DesktopCapture::Start(DataCallback callback) { m_impl->Start(callback); }
     void DesktopCapture::Stop() { m_impl->Stop(); }
 
+}
+
+extern "C" {
+    using namespace CaptureLib;
+
+    void* CreateDesktopCapture() {
+        return new DesktopCapture();
+    }
+
+    void DestroyDesktopCapture(void* capture) {
+        delete reinterpret_cast<DesktopCapture*>(capture);
+    }
+
+    bool InitializeCapture(void* capture, HMONITOR monitor, int bitrate, int fps) {
+        return reinterpret_cast<DesktopCapture*>(capture)->Initialize(monitor, bitrate, fps);
+    }
+
+    void StartCapture(void* capture, CaptureDataCallback callback) {
+        reinterpret_cast<DesktopCapture*>(capture)->Start([callback](const uint8_t* data, size_t size, uint64_t timestamp) {
+            if (callback) {
+                callback(data, size, timestamp);
+            }
+        });
+    }
+
+    void StopCapture(void* capture) {
+        reinterpret_cast<DesktopCapture*>(capture)->Stop();
+    }
+
+    int GetMonitors(CMonitorInfo* monitors, int maxCount) {
+        auto list = DesktopCapture::EnumerateMonitors();
+        int count = (int)list.size();
+        if (count > maxCount) count = maxCount;
+        for (int i = 0; i < count; i++) {
+            monitors[i].handle = list[i].handle;
+            wcsncpy_s(monitors[i].name, list[i].name.c_str(), _TRUNCATE);
+        }
+        return count;
+    }
 }

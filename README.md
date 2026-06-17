@@ -57,3 +57,37 @@ capture.Stop();
 - **采集**: 使用 `Windows.Graphics.Capture` API，支持高性能桌面抓取。
 - **编码**: 使用 Media Foundation 硬件加速编码器 (`CLSID_CMSH264EncoderMFT`)。
 - **颜色转换**: 从 WGC 的 `B8G8R8A8` 格式转换为编码器通用的 `NV12` 格式（实现中建议使用 GPU Video Processor）。
+
+## h264
+
+### 检查 h264 文件编码是否正确
+
+- ffprobe
+
+    ```powershell
+    ffprobe ./go_capture.h264
+    ```
+    
+    关键输出信息：
+    
+    ```powershell
+    Input #0, h264, from '.\go_capture.h264':
+      Duration: N/A, bitrate: N/A
+      Stream #0:0: Video: h264 (Main), yuv420p(progressive), 2560x1440, 60 fps, 60 tbr, 1200k tbn
+    ```
+  
+- ffmpeg
+
+    ```powershell
+    ffmpeg -v error -i go_capture.h264 -f null -
+    ```
+    
+    如果没有任何输出，说明码流可以被正确解码
+
+### 播放视频文件
+
+无法直接播放 h264 文件，可以尝试将其转换为 mp4 文件
+
+```powershell
+ffmpeg -i go_capture.h264 -c copy go_capture.mp4
+```

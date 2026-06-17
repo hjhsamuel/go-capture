@@ -9,7 +9,7 @@ add_compile_options(/await /std:c++20)
 
 include_directories(${CMAKE_CURRENT_SOURCE_DIR})
 
-add_library(CaptureLib STATIC
+add_library(CaptureLib SHARED
     CaptureLib.h
     CaptureLib.cpp
 )

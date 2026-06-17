@@ -36,3 +36,20 @@ namespace CaptureLib {
     };
 
 }
+
+extern "C" {
+    typedef void(*CaptureDataCallback)(const uint8_t* data, size_t size, uint64_t timestamp);
+
+    CAPTURELIB_API void* CreateDesktopCapture();
+    CAPTURELIB_API void DestroyDesktopCapture(void* capture);
+    CAPTURELIB_API bool InitializeCapture(void* capture, HMONITOR monitor, int bitrate, int fps);
+    CAPTURELIB_API void StartCapture(void* capture, CaptureDataCallback callback);
+    CAPTURELIB_API void StopCapture(void* capture);
+    
+    // Helper to get monitors
+    struct CMonitorInfo {
+        HMONITOR handle;
+        wchar_t name[256];
+    };
+    CAPTURELIB_API int GetMonitors(CMonitorInfo* monitors, int maxCount);
+}
