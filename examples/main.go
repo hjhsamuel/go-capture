@@ -1,8 +1,8 @@
 package main
 
 /*
-#cgo CFLAGS: -I./CaptureLib
-#cgo LDFLAGS: -L./build_all/CaptureLib/Release -lCaptureLib -lwindowsapp -ld3d11 -lmfplat -lmfuuid -lmfreadwrite -lwmcodecdspuuid -lole32 -luser32
+#cgo CFLAGS: -I.
+#cgo LDFLAGS: -L. -lCaptureLib -lwindowsapp -ld3d11 -lmfplat -lmfuuid -lmfreadwrite -lwmcodecdspuuid -lole32 -luser32
 
 #include <windows.h>
 #include <stdint.h>

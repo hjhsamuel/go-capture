@@ -76,11 +76,16 @@ cmake --build . --config Release
 
 ### Golang
 
-golang 通过 CGO 加载 dll 文件，因此需要先完成 dll 文件的编译，具体操作 [参考](https://github.com/hjhsamuel/go-capture#编译步骤)
+Golang 示例位于 `examples` 目录下。运行前需要先编译生成 `CaptureLib.dll`：
 
-在编译完成后，请将 dll 文件拷贝至项目根目录下，然后执行：
+1. 按照“编译步骤”生成 `CaptureLib.dll`。
+2. 将 `CaptureLib.dll` 和 `CaptureLib.h` 拷贝到 `examples` 目录。
+3. 进入 `examples` 目录并运行：
 
 ```powershell
+cd examples
+copy ..\build\CaptureLib\Release\CaptureLib.dll .
+copy ..\CaptureLib\CaptureLib.h .
 go run main.go
 ```
 
@@ -91,13 +96,13 @@ go run main.go
 - ffprobe
 
     ```powershell
-    ffprobe ./go_capture.h264
+    ffprobe ./examples/go_capture.h264
     ```
     
     关键输出信息：
     
     ```powershell
-    Input #0, h264, from '.\go_capture.h264':
+    Input #0, h264, from './examples/go_capture.h264':
       Duration: N/A, bitrate: N/A
       Stream #0:0: Video: h264 (Main), yuv420p(progressive), 2560x1440, 60 fps, 60 tbr, 1200k tbn
     ```
