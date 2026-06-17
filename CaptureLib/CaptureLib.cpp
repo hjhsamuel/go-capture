@@ -554,6 +554,7 @@ namespace CaptureLib {
                 // We need to convert it to wstring.
                 std::string name(mi.szDevice);
                 info.name = std::wstring(name.begin(), name.end());
+                info.isPrimary = (mi.dwFlags & MONITORINFOF_PRIMARY) != 0;
                 monitors.push_back(info);
             }
             return TRUE;
@@ -603,6 +604,7 @@ extern "C" {
         for (int i = 0; i < count; i++) {
             monitors[i].handle = list[i].handle;
             wcsncpy_s(monitors[i].name, list[i].name.c_str(), _TRUNCATE);
+            monitors[i].isPrimary = list[i].isPrimary;
         }
         return count;
     }

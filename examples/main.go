@@ -19,6 +19,7 @@ void StopCapture(void* capture);
 struct CMonitorInfo {
     HMONITOR handle;
     wchar_t name[256];
+    bool isPrimary;
 };
 int GetMonitors(struct CMonitorInfo* monitors, int maxCount);
 
@@ -49,8 +50,9 @@ func goCaptureCallback(data *C.uint8_t, size C.size_t, timestamp C.uint64_t) {
 }
 
 type Monitor struct {
-	Handle C.HMONITOR
-	Name   string
+	Handle    C.HMONITOR
+	Name      string
+	IsPrimary bool
 }
 
 func EnumerateMonitors() []Monitor {
@@ -70,8 +72,9 @@ func EnumerateMonitors() []Monitor {
 		}
 
 		monitors = append(monitors, Monitor{
-			Handle: cMonitors[i].handle,
-			Name:   name,
+			Handle:    cMonitors[i].handle,
+			Name:      name,
+			IsPrimary: bool(cMonitors[i].isPrimary),
 		})
 	}
 	return monitors
@@ -123,7 +126,11 @@ func main() {
 
 	fmt.Printf("Found %d monitors:\n", len(monitors))
 	for i, m := range monitors {
-		fmt.Printf("%d: %s\n", i, m.Name)
+		primaryStr := ""
+		if m.IsPrimary {
+			primaryStr = " (Primary)"
+		}
+		fmt.Printf("%d: %s%s\n", i, m.Name, primaryStr)
 	}
 
 	capture := NewDesktopCapture()

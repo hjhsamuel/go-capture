@@ -15,6 +15,7 @@ namespace CaptureLib {
     struct MonitorInfo {
         HMONITOR handle;
         std::wstring name;
+        bool isPrimary;
     };
 
     typedef std::function<void(const uint8_t* data, size_t size, uint64_t timestamp)> DataCallback;
@@ -50,6 +51,7 @@ extern "C" {
     struct CMonitorInfo {
         HMONITOR handle;
         wchar_t name[256];
+        bool isPrimary;
     };
     CAPTURELIB_API int GetMonitors(CMonitorInfo* monitors, int maxCount);
 }
