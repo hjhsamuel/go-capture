@@ -364,15 +364,14 @@ namespace CaptureLib {
             auto texture = GetDXGIInterfaceFromObject<ID3D11Texture2D>(surface);
             
             if (texture) {
-                // Use the frame's system relative time for MF timestamp if possible, 
-                // or just track incremental timestamps.
-                // Here we use current time to stay consistent with previous logic but 
-                // triggered immediately.
-                auto now = std::chrono::steady_clock::now();
-                if (m_startTime == std::chrono::steady_clock::time_point{}) {
-                    m_startTime = now;
+                // Use the frame's system relative time for MF timestamp.
+                // SystemRelativeTime is in 100ns units.
+                auto systemTime = frame.SystemRelativeTime().count();
+                
+                if (m_startTimeNs == 0) {
+                    m_startTimeNs = systemTime;
                 }
-                uint64_t ts = std::chrono::duration_cast<std::chrono::microseconds>(now - m_startTime).count() * 10; // 100ns units
+                uint64_t ts = systemTime - m_startTimeNs;
                 ProcessFrame(texture.get(), ts);
             }
         }
@@ -569,7 +568,7 @@ namespace CaptureLib {
         bool m_borderRequired;
         uint32_t m_width, m_height;
         uint32_t m_srcWidth, m_srcHeight;
-        std::chrono::steady_clock::time_point m_startTime;
+        int64_t m_startTimeNs = 0;
 
         winrt::Windows::Graphics::DirectX::Direct3D11::IDirect3DDevice m_device{ nullptr };
         winrt::com_ptr<ID3D11Device> m_d3dDevice;
