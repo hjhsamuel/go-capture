@@ -58,11 +58,14 @@ namespace CaptureLib {
             MFShutdown();
         }
 
-        bool Initialize(HMONITOR monitor, int bitrate, int fps, bool borderRequired) {
+        bool Initialize(HMONITOR monitor, int bitrate, int fps, int gopSize, int width, int height, bool borderRequired) {
             std::cout << "Initializing CaptureLib..." << std::endl;
             m_monitor = monitor;
             m_bitrate = bitrate;
             m_fps = fps;
+            m_gopSize = gopSize;
+            m_width = width;
+            m_height = height;
             m_borderRequired = borderRequired;
 
             // Ensure DispatcherQueue exists for the thread
@@ -98,15 +101,20 @@ namespace CaptureLib {
                 return false;
             }
 
-            m_width = m_item.Size().Width;
-            m_height = m_item.Size().Height;
-            std::cout << "Monitor resolution: " << m_width << "x" << m_height << std::endl;
+            m_srcWidth = m_item.Size().Width;
+            m_srcHeight = m_item.Size().Height;
+            std::cout << "Monitor resolution: " << m_srcWidth << "x" << m_srcHeight << std::endl;
+
+            if (m_width <= 0 || m_height <= 0) {
+                m_width = m_srcWidth;
+                m_height = m_srcHeight;
+            }
 
             // Adjust width/height to be even for H264
             m_width &= ~1;
             m_height &= ~1;
 
-            std::cout << "Adjusted resolution: " << m_width << "x" << m_height << " FPS: " << m_fps << " Bitrate: " << m_bitrate << std::endl;
+            std::cout << "Output resolution: " << m_width << "x" << m_height << " FPS: " << m_fps << " Bitrate: " << m_bitrate << std::endl;
 
             return InitEncoder();
         }
@@ -230,9 +238,9 @@ namespace CaptureLib {
                 // Set GOP size (Keyframe spacing)
                 VARIANT varGOP = {};
                 varGOP.vt = VT_UI4;
-                varGOP.ulVal = (m_fps > 0) ? m_fps * 2 : 60; // Every 2 seconds
+                varGOP.ulVal = (m_gopSize > 0) ? (UINT32)m_gopSize : ((m_fps > 0) ? m_fps * 2 : 60);
                 if (FAILED(hr = codecApi->SetValue(&CODECAPI_AVEncMPVGOPSize, &varGOP))) {
-                    // std::cerr << "  Warning: Failed to set GOP size: " << std::hex << hr << std::endl;
+                    std::cerr << "  Warning: Failed to set GOP size: " << std::hex << hr << std::endl;
                 }
 
                 // Disable B-frames for zero-latency reordering
@@ -393,8 +401,8 @@ namespace CaptureLib {
                 contentDesc.InputFrameFormat = D3D11_VIDEO_FRAME_FORMAT_PROGRESSIVE;
                 contentDesc.InputFrameRate.Numerator = m_fps;
                 contentDesc.InputFrameRate.Denominator = 1;
-                contentDesc.InputWidth = m_width;
-                contentDesc.InputHeight = m_height;
+                contentDesc.InputWidth = m_srcWidth;
+                contentDesc.InputHeight = m_srcHeight;
                 contentDesc.OutputFrameRate.Numerator = m_fps;
                 contentDesc.OutputFrameRate.Denominator = 1;
                 contentDesc.OutputWidth = m_width;
@@ -539,12 +547,28 @@ namespace CaptureLib {
             }
         }
 
+        void RequestIDR() {
+            if (!m_encoder) return;
+            winrt::com_ptr<ICodecAPI> codecApi;
+            if (SUCCEEDED(m_encoder->QueryInterface(IID_PPV_ARGS(codecApi.put())))) {
+                VARIANT var = {};
+                var.vt = VT_UI4;
+                var.ulVal = 1;
+                HRESULT hr = codecApi->SetValue(&CODECAPI_AVEncVideoForceKeyFrame, &var);
+                if (FAILED(hr)) {
+                    std::cerr << "Failed to force keyframe: " << std::hex << hr << std::endl;
+                }
+            }
+        }
+
     private:
         HMONITOR m_monitor;
         int m_bitrate;
         int m_fps;
+        int m_gopSize;
         bool m_borderRequired;
         uint32_t m_width, m_height;
+        uint32_t m_srcWidth, m_srcHeight;
         std::chrono::steady_clock::time_point m_startTime;
 
         winrt::Windows::Graphics::DirectX::Direct3D11::IDirect3DDevice m_device{ nullptr };
@@ -599,9 +623,10 @@ namespace CaptureLib {
 
     DesktopCapture::DesktopCapture() : m_impl(new Impl()) {}
     DesktopCapture::~DesktopCapture() { delete m_impl; }
-    bool DesktopCapture::Initialize(HMONITOR monitor, int bitrate, int fps, bool borderRequired) { return m_impl->Initialize(monitor, bitrate, fps, borderRequired); }
+    bool DesktopCapture::Initialize(HMONITOR monitor, int bitrate, int fps, int gopSize, int width, int height, bool borderRequired) { return m_impl->Initialize(monitor, bitrate, fps, gopSize, width, height, borderRequired); }
     void DesktopCapture::Start(DataCallback callback) { m_impl->Start(callback); }
     void DesktopCapture::Stop() { m_impl->Stop(); }
+    void DesktopCapture::RequestIDR() { m_impl->RequestIDR(); }
 
 }
 
@@ -616,8 +641,8 @@ extern "C" {
         delete reinterpret_cast<DesktopCapture*>(capture);
     }
 
-    bool InitializeCapture(void* capture, HMONITOR monitor, int bitrate, int fps, bool borderRequired) {
-        return reinterpret_cast<DesktopCapture*>(capture)->Initialize(monitor, bitrate, fps, borderRequired);
+    bool InitializeCapture(void* capture, HMONITOR monitor, int bitrate, int fps, int gopSize, int width, int height, bool borderRequired) {
+        return reinterpret_cast<DesktopCapture*>(capture)->Initialize(monitor, bitrate, fps, gopSize, width, height, borderRequired);
     }
 
     void StartCapture(void* capture, CaptureDataCallback callback) {
@@ -630,6 +655,10 @@ extern "C" {
 
     void StopCapture(void* capture) {
         reinterpret_cast<DesktopCapture*>(capture)->Stop();
+    }
+
+    void RequestIDR(void* capture) {
+        reinterpret_cast<DesktopCapture*>(capture)->RequestIDR();
     }
 
     int GetMonitors(CMonitorInfo* monitors, int maxCount) {

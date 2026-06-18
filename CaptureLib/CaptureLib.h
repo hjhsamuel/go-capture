@@ -27,9 +27,10 @@ namespace CaptureLib {
         DesktopCapture();
         ~DesktopCapture();
 
-        bool Initialize(HMONITOR monitor, int bitrate, int fps, bool borderRequired);
+        bool Initialize(HMONITOR monitor, int bitrate, int fps, int gopSize, int width, int height, bool borderRequired);
         void Start(DataCallback callback);
         void Stop();
+        void RequestIDR();
 
     private:
         class Impl;
@@ -43,9 +44,10 @@ extern "C" {
 
     CAPTURELIB_API void* CreateDesktopCapture();
     CAPTURELIB_API void DestroyDesktopCapture(void* capture);
-    CAPTURELIB_API bool InitializeCapture(void* capture, HMONITOR monitor, int bitrate, int fps, bool borderRequired);
+    CAPTURELIB_API bool InitializeCapture(void* capture, HMONITOR monitor, int bitrate, int fps, int gopSize, int width, int height, bool borderRequired);
     CAPTURELIB_API void StartCapture(void* capture, CaptureDataCallback callback);
     CAPTURELIB_API void StopCapture(void* capture);
+    CAPTURELIB_API void RequestIDR(void* capture);
     
     // Helper to get monitors
     struct CMonitorInfo {

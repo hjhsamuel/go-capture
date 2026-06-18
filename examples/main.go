@@ -12,9 +12,10 @@ typedef void(*CaptureDataCallback)(const uint8_t* data, size_t size, uint64_t ti
 
 void* CreateDesktopCapture();
 void DestroyDesktopCapture(void* capture);
-bool InitializeCapture(void* capture, HMONITOR monitor, int bitrate, int fps, bool borderRequired);
+bool InitializeCapture(void* capture, HMONITOR monitor, int bitrate, int fps, int gopSize, int width, int height, bool borderRequired);
 void StartCapture(void* capture, CaptureDataCallback callback);
 void StopCapture(void* capture);
+void RequestIDR(void* capture);
 
 struct CMonitorInfo {
     HMONITOR handle;
@@ -35,9 +36,66 @@ import (
 	"fmt"
 	"os"
 	"runtime"
+	"strings"
 	"time"
 	"unsafe"
 )
+
+type NALUType byte
+
+const (
+	NALU_TYPE_UNDEFINED NALUType = 0
+	NALU_TYPE_NON_IDR   NALUType = 1
+	NALU_TYPE_IDR       NALUType = 5
+	NALU_TYPE_SEI       NALUType = 6
+	NALU_TYPE_SPS       NALUType = 7
+	NALU_TYPE_PPS       NALUType = 8
+	NALU_TYPE_AUD       NALUType = 9
+)
+
+func (t NALUType) String() string {
+	switch t {
+	case NALU_TYPE_NON_IDR:
+		return "NON-IDR"
+	case NALU_TYPE_IDR:
+		return "IDR"
+	case NALU_TYPE_SEI:
+		return "SEI"
+	case NALU_TYPE_SPS:
+		return "SPS"
+	case NALU_TYPE_PPS:
+		return "PPS"
+	case NALU_TYPE_AUD:
+		return "AUD"
+	default:
+		return fmt.Sprintf("Type-%d", t)
+	}
+}
+
+func GetNALUTypes(data []byte) []NALUType {
+	var types []NALUType
+	n := len(data)
+	for i := 0; i < n-4; i++ {
+		// Check for start code: 00 00 01 or 00 00 00 01
+		startCodeLen := 0
+		if data[i] == 0 && data[i+1] == 0 && data[i+2] == 1 {
+			startCodeLen = 3
+		} else if data[i] == 0 && data[i+1] == 0 && data[i+2] == 0 && data[i+3] == 1 {
+			startCodeLen = 4
+		}
+
+		if startCodeLen > 0 {
+			pos := i + startCodeLen
+			if pos < n {
+				// NALU Header: F(1 bit), NRI(2 bits), Type(5 bits)
+				naluType := NALUType(data[pos] & 0x1F)
+				types = append(types, naluType)
+			}
+			i += startCodeLen - 1 // Skip start code
+		}
+	}
+	return types
+}
 
 var globalCallback func([]byte, uint64)
 
@@ -96,8 +154,8 @@ func (c *DesktopCapture) Close() {
 	}
 }
 
-func (c *DesktopCapture) Initialize(monitor C.HMONITOR, bitrate int, fps int, borderRequired bool) bool {
-	return bool(C.InitializeCapture(c.ptr, monitor, C.int(bitrate), C.int(fps), C.bool(borderRequired)))
+func (c *DesktopCapture) Initialize(monitor C.HMONITOR, bitrate int, fps int, gop int, width int, height int, borderRequired bool) bool {
+	return bool(C.InitializeCapture(c.ptr, monitor, C.int(bitrate), C.int(fps), C.int(gop), C.int(width), C.int(height), C.bool(borderRequired)))
 }
 
 func (c *DesktopCapture) Start(callback func([]byte, uint64)) {
@@ -108,6 +166,10 @@ func (c *DesktopCapture) Start(callback func([]byte, uint64)) {
 func (c *DesktopCapture) Stop() {
 	C.StopCapture(c.ptr)
 	globalCallback = nil
+}
+
+func (c *DesktopCapture) RequestIDR() {
+	C.RequestIDR(c.ptr)
 }
 
 func main() {
@@ -138,9 +200,12 @@ func main() {
 
 	bitrate := 4000000
 	fps := 60
+	gop := 120
+	width := 1920
+	height := 1080
 	borderRequired := true
 
-	if !capture.Initialize(monitors[0].Handle, bitrate, fps, borderRequired) {
+	if !capture.Initialize(monitors[0].Handle, bitrate, fps, gop, width, height, borderRequired) {
 		fmt.Println("Failed to initialize capture")
 		return
 	}
@@ -153,16 +218,35 @@ func main() {
 	defer f.Close()
 
 	frameCount := 0
+	idrCount := 0
 	capture.Start(func(data []byte, timestamp uint64) {
 		f.Write(data)
 		frameCount++
-		if frameCount%60 == 0 {
-			fmt.Printf("\rCaptured %d frames...", frameCount)
+
+		naluTypes := GetNALUTypes(data)
+		isIDR := false
+		var typeStrings []string
+		for _, t := range naluTypes {
+			typeStrings = append(typeStrings, t.String())
+			if t == NALU_TYPE_IDR {
+				isIDR = true
+			}
+		}
+		typeList := ""
+		if len(typeStrings) > 0 {
+			typeList = fmt.Sprintf(" [%s]", strings.Join(typeStrings, ", "))
+		}
+
+		if isIDR {
+			idrCount++
+			fmt.Printf("\n[IDR] Frame %d, IDR count: %d%s\n", frameCount, idrCount, typeList)
+		} else if frameCount%60 == 0 {
+			fmt.Printf("\rCaptured %d frames...%s", frameCount, typeList)
 		}
 	})
 
-	fmt.Println("Capturing for 5 seconds...")
-	time.Sleep(5 * time.Second)
+	fmt.Println("Capturing for 10 seconds...")
+	time.Sleep(10 * time.Second)
 
 	capture.Stop()
 	fmt.Printf("\nCapture finished. Total frames: %d\n", frameCount)
