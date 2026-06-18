@@ -25,4 +25,5 @@ target_link_libraries(CaptureLib
     mfuuid.lib
     mfreadwrite.lib
     wmcodecdspuuid.lib
+    avrt.lib
 )

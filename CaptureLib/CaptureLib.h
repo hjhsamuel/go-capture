@@ -27,7 +27,7 @@ namespace CaptureLib {
         DesktopCapture();
         ~DesktopCapture();
 
-        bool Initialize(HMONITOR monitor, int bitrate, int fps);
+        bool Initialize(HMONITOR monitor, int bitrate, int fps, bool borderRequired);
         void Start(DataCallback callback);
         void Stop();
 
@@ -43,7 +43,7 @@ extern "C" {
 
     CAPTURELIB_API void* CreateDesktopCapture();
     CAPTURELIB_API void DestroyDesktopCapture(void* capture);
-    CAPTURELIB_API bool InitializeCapture(void* capture, HMONITOR monitor, int bitrate, int fps);
+    CAPTURELIB_API bool InitializeCapture(void* capture, HMONITOR monitor, int bitrate, int fps, bool borderRequired);
     CAPTURELIB_API void StartCapture(void* capture, CaptureDataCallback callback);
     CAPTURELIB_API void StopCapture(void* capture);
     

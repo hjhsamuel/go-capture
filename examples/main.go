@@ -12,7 +12,7 @@ typedef void(*CaptureDataCallback)(const uint8_t* data, size_t size, uint64_t ti
 
 void* CreateDesktopCapture();
 void DestroyDesktopCapture(void* capture);
-bool InitializeCapture(void* capture, HMONITOR monitor, int bitrate, int fps);
+bool InitializeCapture(void* capture, HMONITOR monitor, int bitrate, int fps, bool borderRequired);
 void StartCapture(void* capture, CaptureDataCallback callback);
 void StopCapture(void* capture);
 
@@ -96,8 +96,8 @@ func (c *DesktopCapture) Close() {
 	}
 }
 
-func (c *DesktopCapture) Initialize(monitor C.HMONITOR, bitrate int, fps int) bool {
-	return bool(C.InitializeCapture(c.ptr, monitor, C.int(bitrate), C.int(fps)))
+func (c *DesktopCapture) Initialize(monitor C.HMONITOR, bitrate int, fps int, borderRequired bool) bool {
+	return bool(C.InitializeCapture(c.ptr, monitor, C.int(bitrate), C.int(fps), C.bool(borderRequired)))
 }
 
 func (c *DesktopCapture) Start(callback func([]byte, uint64)) {
@@ -138,8 +138,9 @@ func main() {
 
 	bitrate := 4000000
 	fps := 60
+	borderRequired := true
 
-	if !capture.Initialize(monitors[0].Handle, bitrate, fps) {
+	if !capture.Initialize(monitors[0].Handle, bitrate, fps, borderRequired) {
 		fmt.Println("Failed to initialize capture")
 		return
 	}

@@ -36,7 +36,8 @@ int main() {
     DesktopCapture capture;
     int bitrate = 4000000; // 4 Mbps
     int fps = 60;
-    if (!capture.Initialize(monitors[0].handle, bitrate, fps)) {
+    bool borderRequired = false;
+    if (!capture.Initialize(monitors[0].handle, bitrate, fps, borderRequired)) {
         std::cerr << "Failed to initialize capture!" << std::endl;
         return 1;
     }

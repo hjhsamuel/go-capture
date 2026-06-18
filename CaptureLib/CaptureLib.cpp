@@ -17,6 +17,7 @@
 #include <mferror.h>
 #include <codecapi.h>
 #include <wrl.h>
+#include <avrt.h>
 #include <atomic>
 #include <queue>
 #include <mutex>
@@ -30,6 +31,7 @@
 #pragma comment(lib, "mfuuid")
 #pragma comment(lib, "mfreadwrite")
 #pragma comment(lib, "wmcodecdspuuid")
+#pragma comment(lib, "avrt")
 
 using namespace Microsoft::WRL;
 
@@ -56,11 +58,12 @@ namespace CaptureLib {
             MFShutdown();
         }
 
-        bool Initialize(HMONITOR monitor, int bitrate, int fps) {
+        bool Initialize(HMONITOR monitor, int bitrate, int fps, bool borderRequired) {
             std::cout << "Initializing CaptureLib..." << std::endl;
             m_monitor = monitor;
             m_bitrate = bitrate;
             m_fps = fps;
+            m_borderRequired = borderRequired;
 
             // Ensure DispatcherQueue exists for the thread
             if (!m_dispatcherQueue) {
@@ -103,6 +106,8 @@ namespace CaptureLib {
             m_width &= ~1;
             m_height &= ~1;
 
+            std::cout << "Adjusted resolution: " << m_width << "x" << m_height << " FPS: " << m_fps << " Bitrate: " << m_bitrate << std::endl;
+
             return InitEncoder();
         }
 
@@ -119,7 +124,7 @@ namespace CaptureLib {
             UINT32 count = 0;
             IMFActivate** activates = nullptr;
             
-            // Try all encoders and sort them
+            // Just use FLAG_ALL to avoid filtering issues, but sort and filter is usually better
             hr = MFTEnumEx(MFT_CATEGORY_VIDEO_ENCODER, MFT_ENUM_FLAG_ALL | MFT_ENUM_FLAG_SORTANDFILTER, nullptr, &outInfo, &activates, &count);
             
             if (FAILED(hr) || count == 0) {
@@ -153,6 +158,7 @@ namespace CaptureLib {
                 MFSetAttributeSize(outType.get(), MF_MT_FRAME_SIZE, m_width, m_height);
                 MFSetAttributeRatio(outType.get(), MF_MT_FRAME_RATE, m_fps, 1);
                 outType->SetUINT32(MF_MT_INTERLACE_MODE, MFVideoInterlace_Progressive);
+                outType->SetUINT32(MF_MT_MAX_KEYFRAME_SPACING, 30); // Use a more reasonable default GOP size
                 
                 hr = m_encoder->SetOutputType(0, outType.get(), 0);
                 if (FAILED(hr)) {
@@ -171,6 +177,8 @@ namespace CaptureLib {
                     MFSetAttributeSize(inType.get(), MF_MT_FRAME_SIZE, m_width, m_height);
                     MFSetAttributeRatio(inType.get(), MF_MT_FRAME_RATE, m_fps, 1);
                     inType->SetUINT32(MF_MT_INTERLACE_MODE, MFVideoInterlace_Progressive);
+                    // MF_MT_REAL_TIME might not be available in all SDK versions
+                    // inType->SetUINT32(MF_MT_REAL_TIME, TRUE);
 
                     hr = m_encoder->SetInputType(0, inType.get(), 0);
                     if (SUCCEEDED(hr)) {
@@ -202,6 +210,49 @@ namespace CaptureLib {
                 var.vt = VT_UI4;
                 var.ulVal = m_bitrate;
                 codecApi->SetValue(&CODECAPI_AVEncCommonMeanBitRate, &var);
+
+                // Enable Low Latency Mode
+                VARIANT varLL = {};
+                varLL.vt = VT_BOOL;
+                varLL.boolVal = VARIANT_TRUE;
+                if (FAILED(hr = codecApi->SetValue(&CODECAPI_AVLowLatencyMode, &varLL))) {
+                    std::cerr << "  Warning: Failed to set low latency mode: " << std::hex << hr << std::endl;
+                }
+
+                // Enable Real Time Mode
+                VARIANT varRT = {};
+                varRT.vt = VT_BOOL;
+                varRT.boolVal = VARIANT_TRUE;
+                if (FAILED(hr = codecApi->SetValue(&CODECAPI_AVEncCommonRealTime, &varRT))) {
+                    std::cerr << "  Warning: Failed to set real time mode: " << std::hex << hr << std::endl;
+                }
+
+                // Set GOP size (Keyframe spacing)
+                VARIANT varGOP = {};
+                varGOP.vt = VT_UI4;
+                varGOP.ulVal = (m_fps > 0) ? m_fps * 2 : 60; // Every 2 seconds
+                if (FAILED(hr = codecApi->SetValue(&CODECAPI_AVEncMPVGOPSize, &varGOP))) {
+                    // std::cerr << "  Warning: Failed to set GOP size: " << std::hex << hr << std::endl;
+                }
+
+                // Disable B-frames for zero-latency reordering
+                // CODECAPI_AVEncVideoMaxNumRefFrames: {3091B33B-8C4E-4643-984F-6E941D6837C5}
+                VARIANT varB = {};
+                varB.vt = VT_UI4;
+                varB.ulVal = 0;
+                const GUID CLSID_AVEncVideoMaxNumRefFrames = { 0x3091B33B, 0x8C4E, 0x4643, { 0x98, 0x4F, 0x6E, 0x94, 0x1D, 0x68, 0x37, 0xC5 } };
+                codecApi->SetValue(&CLSID_AVEncVideoMaxNumRefFrames, &varB);
+
+                // If hardware encoder activation failed with 8000ffff previously, 
+                // it might be because of some attributes being set before they are supported.
+                // However, the activation happens in activates[i]->ActivateObject.
+            }
+
+            // Move this before SetOutputType for some encoders
+            winrt::com_ptr<IMFAttributes> encoderAttributes;
+            if (SUCCEEDED(m_encoder->GetAttributes(encoderAttributes.put()))) {
+                encoderAttributes->SetUINT32(MF_TRANSFORM_ASYNC_UNLOCK, TRUE);
+                encoderAttributes->SetUINT32(MF_READWRITE_ENABLE_HARDWARE_TRANSFORMS, TRUE);
             }
 
             m_encoder->ProcessMessage(MFT_MESSAGE_COMMAND_FLUSH, 0);
@@ -209,9 +260,10 @@ namespace CaptureLib {
             m_encoder->ProcessMessage(MFT_MESSAGE_NOTIFY_START_OF_STREAM, 0);
 
             // Set D3D11 Device on Encoder
-            winrt::com_ptr<IMFAttributes> encoderAttributes;
-            if (SUCCEEDED(m_encoder->GetAttributes(encoderAttributes.put()))) {
-                encoderAttributes->SetUINT32(MF_TRANSFORM_ASYNC_UNLOCK, TRUE);
+            // winrt::com_ptr<IMFAttributes> encoderAttributes; // Already declared above
+            if (encoderAttributes) {
+                // Ensure D3D11 is enabled on encoder attributes as well if needed
+                // encoderAttributes->SetUINT32(MF_READWRITE_ENABLE_HARDWARE_TRANSFORMS, TRUE);
             }
 
             winrt::com_ptr<IMFDXGIDeviceManager> deviceManager;
@@ -231,19 +283,26 @@ namespace CaptureLib {
             m_running = true;
 
             m_dispatcherQueue.TryEnqueue([this]() {
+                // Set MMCSS for the dispatcher thread
+                DWORD taskIndex = 0;
+                HANDLE hTask = AvSetMmThreadCharacteristicsW(L"Pro Audio", &taskIndex);
+                if (hTask) {
+                    AvSetMmThreadPriority(hTask, AVRT_PRIORITY_CRITICAL);
+                }
+
                 try {
                     m_framePool = winrt::Windows::Graphics::Capture::Direct3D11CaptureFramePool::CreateFreeThreaded(
                         m_device,
                         winrt::Windows::Graphics::DirectX::DirectXPixelFormat::B8G8R8A8UIntNormalized,
-                        2,
+                        1,
                         m_item.Size());
 
                     m_session = m_framePool.CreateCaptureSession(m_item);
 
-                    // Explicitly set border requirement to true if supported
+                    // Explicitly set border requirement based on input parameter
                     try {
-                        m_session.IsBorderRequired(true);
-                        std::cout << "Border required set to true." << std::endl;
+                        m_session.IsBorderRequired(m_borderRequired);
+                        std::cout << "Border required set to " << (m_borderRequired ? "true" : "false") << "." << std::endl;
                     } catch (...) {
                         std::cout << "IsBorderRequired not supported." << std::endl;
                     }
@@ -297,31 +356,22 @@ namespace CaptureLib {
             auto texture = GetDXGIInterfaceFromObject<ID3D11Texture2D>(surface);
             
             if (texture) {
-                std::lock_guard<std::mutex> lock(m_frameMutex);
-                m_lastWgcFrame = texture;
+                // Use the frame's system relative time for MF timestamp if possible, 
+                // or just track incremental timestamps.
+                // Here we use current time to stay consistent with previous logic but 
+                // triggered immediately.
+                auto now = std::chrono::steady_clock::now();
+                if (m_startTime == std::chrono::steady_clock::time_point{}) {
+                    m_startTime = now;
+                }
+                uint64_t ts = std::chrono::duration_cast<std::chrono::microseconds>(now - m_startTime).count() * 10; // 100ns units
+                ProcessFrame(texture.get(), ts);
             }
         }
 
         void WorkerThread() {
-            auto frameDuration = std::chrono::nanoseconds(1000000000ULL / m_fps);
-            auto nextFrameTime = std::chrono::steady_clock::now();
-            uint64_t timestamp = 0;
-
-            while (m_running) {
-                winrt::com_ptr<ID3D11Texture2D> wgcFrame;
-                {
-                    std::lock_guard<std::mutex> lock(m_frameMutex);
-                    wgcFrame = m_lastWgcFrame;
-                }
-
-                if (wgcFrame) {
-                    ProcessFrame(wgcFrame.get(), timestamp);
-                    timestamp += 10000000ULL / m_fps; // 100ns units for MF
-                }
-
-                nextFrameTime += frameDuration;
-                std::this_thread::sleep_until(nextFrameTime);
-            }
+            // WorkerThread is no longer used for periodic encoding to reduce latency.
+            // Events are now handled in OnFrameArrived.
         }
 
         void ProcessFrame(ID3D11Texture2D* wgcTexture, uint64_t timestamp) {
@@ -333,26 +383,7 @@ namespace CaptureLib {
                 mt->Enter();
             }
 
-            // Copy to cache texture first to ensure stability
-            if (!m_cacheTexture) {
-                D3D11_TEXTURE2D_DESC desc;
-                wgcTexture->GetDesc(&desc);
-                desc.BindFlags = D3D11_BIND_SHADER_RESOURCE | D3D11_BIND_RENDER_TARGET;
-                desc.MiscFlags = 0;
-                desc.Usage = D3D11_USAGE_DEFAULT;
-                desc.CPUAccessFlags = 0;
-                m_d3dDevice->CreateTexture2D(&desc, nullptr, m_cacheTexture.put());
-            }
-
-            if (m_cacheTexture) {
-                m_d3dContext->CopyResource(m_cacheTexture.get(), wgcTexture);
-            }
-
-            ID3D11Texture2D* texture = m_cacheTexture.get();
-            if (!texture) {
-                if (mt) mt->Leave();
-                return;
-            }
+            ID3D11Texture2D* texture = wgcTexture;
 
             HRESULT hr = S_OK;
 
@@ -432,6 +463,8 @@ namespace CaptureLib {
 
             pSample->SetSampleTime(timestamp);
             pSample->SetSampleDuration(10000000ULL / m_fps);
+            // Low latency hint
+            pSample->SetUINT32(MF_LOW_LATENCY, TRUE);
 
             winrt::com_ptr<IMFMediaBuffer> pBuffer;
             hr = MFCreateDXGISurfaceBuffer(__uuidof(ID3D11Texture2D), m_nv12Texture.get(), 0, FALSE, pBuffer.put());
@@ -510,7 +543,9 @@ namespace CaptureLib {
         HMONITOR m_monitor;
         int m_bitrate;
         int m_fps;
+        bool m_borderRequired;
         uint32_t m_width, m_height;
+        std::chrono::steady_clock::time_point m_startTime;
 
         winrt::Windows::Graphics::DirectX::Direct3D11::IDirect3DDevice m_device{ nullptr };
         winrt::com_ptr<ID3D11Device> m_d3dDevice;
@@ -564,7 +599,7 @@ namespace CaptureLib {
 
     DesktopCapture::DesktopCapture() : m_impl(new Impl()) {}
     DesktopCapture::~DesktopCapture() { delete m_impl; }
-    bool DesktopCapture::Initialize(HMONITOR monitor, int bitrate, int fps) { return m_impl->Initialize(monitor, bitrate, fps); }
+    bool DesktopCapture::Initialize(HMONITOR monitor, int bitrate, int fps, bool borderRequired) { return m_impl->Initialize(monitor, bitrate, fps, borderRequired); }
     void DesktopCapture::Start(DataCallback callback) { m_impl->Start(callback); }
     void DesktopCapture::Stop() { m_impl->Stop(); }
 
@@ -581,8 +616,8 @@ extern "C" {
         delete reinterpret_cast<DesktopCapture*>(capture);
     }
 
-    bool InitializeCapture(void* capture, HMONITOR monitor, int bitrate, int fps) {
-        return reinterpret_cast<DesktopCapture*>(capture)->Initialize(monitor, bitrate, fps);
+    bool InitializeCapture(void* capture, HMONITOR monitor, int bitrate, int fps, bool borderRequired) {
+        return reinterpret_cast<DesktopCapture*>(capture)->Initialize(monitor, bitrate, fps, borderRequired);
     }
 
     void StartCapture(void* capture, CaptureDataCallback callback) {
