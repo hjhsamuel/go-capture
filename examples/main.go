@@ -245,10 +245,23 @@ func main() {
 		}
 	})
 
+	ticker := time.NewTicker(time.Second)
+	go func() {
+		for {
+			select {
+			case <-ticker.C:
+				fmt.Println("\nRequesting IDR frame...")
+				capture.RequestIDR()
+			}
+		}
+	}()
+
 	fmt.Println("Capturing for 10 seconds...")
 	time.Sleep(10 * time.Second)
 
+	ticker.Stop()
 	capture.Stop()
+
 	fmt.Printf("\nCapture finished. Total frames: %d\n", frameCount)
 	fmt.Println("Output saved to go_capture.h264")
 }

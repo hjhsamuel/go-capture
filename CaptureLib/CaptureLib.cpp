@@ -289,6 +289,7 @@ namespace CaptureLib {
             std::cout << "Starting capture session..." << std::endl;
             m_callback = callback;
             m_running = true;
+            m_startTimeNs = 0; // Reset start time
 
             m_dispatcherQueue.TryEnqueue([this]() {
                 // Set MMCSS for the dispatcher thread
@@ -364,21 +365,39 @@ namespace CaptureLib {
             auto texture = GetDXGIInterfaceFromObject<ID3D11Texture2D>(surface);
             
             if (texture) {
-                // Use the frame's system relative time for MF timestamp.
-                // SystemRelativeTime is in 100ns units.
-                auto systemTime = frame.SystemRelativeTime().count();
+                std::lock_guard<std::mutex> lock(m_frameMutex);
+                m_lastWgcFrame = texture;
                 
+                auto systemTime = frame.SystemRelativeTime().count();
                 if (m_startTimeNs == 0) {
                     m_startTimeNs = systemTime;
                 }
-                uint64_t ts = systemTime - m_startTimeNs;
-                ProcessFrame(texture.get(), ts);
             }
         }
 
         void WorkerThread() {
-            // WorkerThread is no longer used for periodic encoding to reduce latency.
-            // Events are now handled in OnFrameArrived.
+            auto frameDuration = std::chrono::nanoseconds(1000000000 / m_fps);
+            auto nextFrameTime = std::chrono::steady_clock::now();
+            uint64_t frameCount = 0;
+
+            while (m_running) {
+                {
+                    winrt::com_ptr<ID3D11Texture2D> texture;
+                    {
+                        std::lock_guard<std::mutex> lock(m_frameMutex);
+                        texture = m_lastWgcFrame;
+                    }
+
+                    if (texture) {
+                        // Use a relative timestamp for the encoder based on constant FPS.
+                        uint64_t ts = (frameCount++) * (10000000ULL / m_fps); // 100ns units
+                        ProcessFrame(texture.get(), ts);
+                    }
+                }
+
+                nextFrameTime += frameDuration;
+                std::this_thread::sleep_until(nextFrameTime);
+            }
         }
 
         void ProcessFrame(ID3D11Texture2D* wgcTexture, uint64_t timestamp) {
@@ -625,7 +644,9 @@ namespace CaptureLib {
     bool DesktopCapture::Initialize(HMONITOR monitor, int bitrate, int fps, int gopSize, int width, int height, bool borderRequired) { return m_impl->Initialize(monitor, bitrate, fps, gopSize, width, height, borderRequired); }
     void DesktopCapture::Start(DataCallback callback) { m_impl->Start(callback); }
     void DesktopCapture::Stop() { m_impl->Stop(); }
-    void DesktopCapture::RequestIDR() { m_impl->RequestIDR(); }
+    void DesktopCapture::RequestIDR() { 
+        m_impl->RequestIDR(); 
+    }
 
 }
 
