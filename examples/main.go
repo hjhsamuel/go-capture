@@ -200,7 +200,7 @@ func main() {
 
 	bitrate := 4000000
 	fps := 60
-	gop := 120
+	gop := fps * 2
 	width := 1920
 	height := 1080
 	borderRequired := true

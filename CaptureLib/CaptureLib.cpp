@@ -366,7 +366,31 @@ namespace CaptureLib {
             
             if (texture) {
                 std::lock_guard<std::mutex> lock(m_frameMutex);
-                m_lastWgcFrame = texture;
+                
+                // Copy the frame to our cache texture to decouple from WGC frame pool recycling.
+                // This prevents flickering caused by the pool reusing the texture while we are still encoding it.
+                if (!m_cacheTexture) {
+                    D3D11_TEXTURE2D_DESC desc;
+                    texture->GetDesc(&desc);
+                    // Ensure it's a default usage texture for CopyResource
+                    desc.Usage = D3D11_USAGE_DEFAULT;
+                    desc.BindFlags = D3D11_BIND_SHADER_RESOURCE | D3D11_BIND_RENDER_TARGET;
+                    desc.CPUAccessFlags = 0;
+                    desc.MiscFlags = 0;
+                    m_d3dDevice->CreateTexture2D(&desc, nullptr, m_cacheTexture.put());
+                }
+
+                if (m_cacheTexture) {
+                    // Use multithread protection if available for the copy
+                    winrt::com_ptr<ID3D11Multithread> mt;
+                    if (SUCCEEDED(m_d3dContext->QueryInterface(IID_PPV_ARGS(mt.put())))) {
+                        mt->Enter();
+                    }
+                    m_d3dContext->CopyResource(m_cacheTexture.get(), texture.get());
+                    if (mt) {
+                        mt->Leave();
+                    }
+                }
                 
                 auto systemTime = frame.SystemRelativeTime().count();
                 if (m_startTimeNs == 0) {
@@ -377,15 +401,23 @@ namespace CaptureLib {
 
         void WorkerThread() {
             auto frameDuration = std::chrono::nanoseconds(1000000000 / m_fps);
-            auto nextFrameTime = std::chrono::steady_clock::now();
+            auto startTIme = std::chrono::steady_clock::now();
+            auto nextFrameTime = startTIme;
             uint64_t frameCount = 0;
+
+            // Use high-resolution waitable timer if available (Windows 10 1803+)
+            HANDLE timer = CreateWaitableTimerExW(NULL, NULL, CREATE_WAITABLE_TIMER_HIGH_RESOLUTION, TIMER_ALL_ACCESS);
+            if (!timer) {
+                // Fallback to normal waitable timer
+                timer = CreateWaitableTimerW(NULL, FALSE, NULL);
+            }
 
             while (m_running) {
                 {
                     winrt::com_ptr<ID3D11Texture2D> texture;
                     {
                         std::lock_guard<std::mutex> lock(m_frameMutex);
-                        texture = m_lastWgcFrame;
+                        texture = m_cacheTexture;
                     }
 
                     if (texture) {
@@ -396,7 +428,22 @@ namespace CaptureLib {
                 }
 
                 nextFrameTime += frameDuration;
-                std::this_thread::sleep_until(nextFrameTime);
+                auto now = std::chrono::steady_clock::now();
+                if (nextFrameTime > now) {
+                    auto delay = std::chrono::duration_cast<std::chrono::nanoseconds>(nextFrameTime - now);
+                    if (timer) {
+                        LARGE_INTEGER dueTime;
+                        dueTime.QuadPart = -(delay.count() / 100); // 100ns units, negative for relative
+                        SetWaitableTimer(timer, &dueTime, 0, NULL, NULL, FALSE);
+                        WaitForSingleObject(timer, INFINITE);
+                    } else {
+                        std::this_thread::sleep_for(delay);
+                    }
+                }
+            }
+
+            if (timer) {
+                CloseHandle(timer);
             }
         }
 
