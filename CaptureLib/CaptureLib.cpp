@@ -24,6 +24,7 @@
 #include <condition_variable>
 #include <thread>
 #include <iostream>
+#include <sstream>
 
 #pragma comment(lib, "windowsapp")
 #pragma comment(lib, "d3d11")
@@ -36,6 +37,14 @@
 using namespace Microsoft::WRL;
 
 namespace CaptureLib {
+
+    static LogCallback g_logCallback = nullptr;
+
+    static void Log(int level, const std::string& message) {
+        if (g_logCallback) {
+            g_logCallback(level, message.c_str());
+        }
+    }
 
     // Helper to convert winrt device to d3d11 device
     template <typename T>
@@ -59,7 +68,7 @@ namespace CaptureLib {
         }
 
         bool Initialize(HMONITOR monitor, int bitrate, int fps, int gopSize, int width, int height, bool borderRequired) {
-            std::cout << "Initializing CaptureLib..." << std::endl;
+            Log(0, "Initializing CaptureLib...");
             m_monitor = monitor;
             m_bitrate = bitrate;
             m_fps = fps;
@@ -78,7 +87,9 @@ namespace CaptureLib {
             UINT flags = D3D11_CREATE_DEVICE_BGRA_SUPPORT | D3D11_CREATE_DEVICE_VIDEO_SUPPORT;
             HRESULT hr = D3D11CreateDevice(nullptr, D3D_DRIVER_TYPE_HARDWARE, nullptr, flags, nullptr, 0, D3D11_SDK_VERSION, m_d3dDevice.put(), nullptr, m_d3dContext.put());
             if (FAILED(hr)) {
-                std::cerr << "Failed to create D3D11 Device: " << std::hex << hr << std::endl;
+                std::stringstream ss;
+                ss << "Failed to create D3D11 Device: 0x" << std::hex << hr;
+                Log(2, ss.str());
                 return false;
             }
 
@@ -97,13 +108,19 @@ namespace CaptureLib {
             auto interop_factory = winrt::get_activation_factory<winrt::Windows::Graphics::Capture::GraphicsCaptureItem, IGraphicsCaptureItemInterop>();
             hr = interop_factory->CreateForMonitor(m_monitor, winrt::guid_of<ABI::Windows::Graphics::Capture::IGraphicsCaptureItem>(), winrt::put_abi(m_item));
             if (FAILED(hr)) {
-                std::cerr << "Failed to create GraphicsCaptureItem for monitor: " << std::hex << hr << std::endl;
+                std::stringstream ss;
+                ss << "Failed to create GraphicsCaptureItem for monitor: 0x" << std::hex << hr;
+                Log(2, ss.str());
                 return false;
             }
 
             m_srcWidth = m_item.Size().Width;
             m_srcHeight = m_item.Size().Height;
-            std::cout << "Monitor resolution: " << m_srcWidth << "x" << m_srcHeight << std::endl;
+            {
+                std::stringstream ss;
+                ss << "Monitor resolution: " << m_srcWidth << "x" << m_srcHeight;
+                Log(0, ss.str());
+            }
 
             if (m_width <= 0 || m_height <= 0) {
                 m_width = m_srcWidth;
@@ -114,7 +131,11 @@ namespace CaptureLib {
             m_width &= ~1;
             m_height &= ~1;
 
-            std::cout << "Output resolution: " << m_width << "x" << m_height << " FPS: " << m_fps << " Bitrate: " << m_bitrate << std::endl;
+            {
+                std::stringstream ss;
+                ss << "Output resolution: " << m_width << "x" << m_height << " FPS: " << m_fps << " Bitrate: " << m_bitrate;
+                Log(0, ss.str());
+            }
 
             return InitEncoder();
         }
@@ -124,7 +145,7 @@ namespace CaptureLib {
         }
 
         bool InitMFT() {
-            std::cout << "Initializing MFT..." << std::endl;
+            Log(0, "Initializing MFT...");
             HRESULT hr = S_OK;
             
             // Find H264 Encoder MFT
@@ -136,11 +157,15 @@ namespace CaptureLib {
             hr = MFTEnumEx(MFT_CATEGORY_VIDEO_ENCODER, MFT_ENUM_FLAG_ALL | MFT_ENUM_FLAG_SORTANDFILTER, nullptr, &outInfo, &activates, &count);
             
             if (FAILED(hr) || count == 0) {
-                std::cerr << "No H264 encoders found!" << std::endl;
+                Log(2, "No H264 encoders found!");
                 return false;
             }
 
-            std::cout << "Found " << count << " encoders." << std::endl;
+            {
+                std::stringstream ss;
+                ss << "Found " << count << " encoders.";
+                Log(0, ss.str());
+            }
 
             for (UINT32 i = 0; i < count; i++) {
                 m_encoder = nullptr;
@@ -148,12 +173,19 @@ namespace CaptureLib {
                 UINT32 nameLen = 0;
                 activates[i]->GetAllocatedString(MFT_FRIENDLY_NAME_Attribute, &name, &nameLen);
                 std::wstring wname = name ? name : L"Unknown";
-                std::wcout << L"Trying Encoder [" << i << L"]: " << wname << std::endl;
+                {
+                    std::stringstream ss;
+                    std::string nname(wname.begin(), wname.end());
+                    ss << "Trying Encoder [" << i << "]: " << nname;
+                    Log(0, ss.str());
+                }
                 if (name) CoTaskMemFree(name);
 
                 hr = activates[i]->ActivateObject(IID_PPV_ARGS(m_encoder.put()));
                 if (FAILED(hr)) {
-                    std::cerr << "  Failed to activate: " << std::hex << hr << std::endl;
+                    std::stringstream ss;
+                    ss << "  Failed to activate: 0x" << std::hex << hr;
+                    Log(2, ss.str());
                     continue;
                 }
 
@@ -170,7 +202,9 @@ namespace CaptureLib {
                 
                 hr = m_encoder->SetOutputType(0, outType.get(), 0);
                 if (FAILED(hr)) {
-                    std::cerr << "  Failed to set output type: " << std::hex << hr << std::endl;
+                    std::stringstream ss;
+                    ss << "  Failed to set output type: 0x" << std::hex << hr;
+                    Log(2, ss.str());
                     continue;
                 }
 
@@ -192,16 +226,18 @@ namespace CaptureLib {
                     if (SUCCEEDED(hr)) {
                         m_inputFormat = fmt;
                         inputSet = true;
-                        std::cout << "  Successfully set input format." << std::endl;
+                        Log(0, "  Successfully set input format.");
                         break;
                     }
                 }
 
                 if (inputSet) {
-                    std::cout << "Successfully configured encoder " << i << std::endl;
+                    std::stringstream ss;
+                    ss << "Successfully configured encoder " << i;
+                    Log(0, ss.str());
                     break;
                 } else {
-                    std::cerr << "  Failed to set any input format." << std::endl;
+                    Log(2, "  Failed to set any input format.");
                     m_encoder = nullptr;
                 }
             }
@@ -224,7 +260,9 @@ namespace CaptureLib {
                 varLL.vt = VT_BOOL;
                 varLL.boolVal = VARIANT_TRUE;
                 if (FAILED(hr = codecApi->SetValue(&CODECAPI_AVLowLatencyMode, &varLL))) {
-                    std::cerr << "  Warning: Failed to set low latency mode: " << std::hex << hr << std::endl;
+                    std::stringstream ss;
+                    ss << "  Warning: Failed to set low latency mode: 0x" << std::hex << hr;
+                    Log(1, ss.str());
                 }
 
                 // Enable Real Time Mode
@@ -232,7 +270,9 @@ namespace CaptureLib {
                 varRT.vt = VT_BOOL;
                 varRT.boolVal = VARIANT_TRUE;
                 if (FAILED(hr = codecApi->SetValue(&CODECAPI_AVEncCommonRealTime, &varRT))) {
-                    std::cerr << "  Warning: Failed to set real time mode: " << std::hex << hr << std::endl;
+                    std::stringstream ss;
+                    ss << "  Warning: Failed to set real time mode: 0x" << std::hex << hr;
+                    Log(1, ss.str());
                 }
 
                 // Set GOP size (Keyframe spacing)
@@ -240,7 +280,9 @@ namespace CaptureLib {
                 varGOP.vt = VT_UI4;
                 varGOP.ulVal = (m_gopSize > 0) ? (UINT32)m_gopSize : ((m_fps > 0) ? m_fps * 2 : 60);
                 if (FAILED(hr = codecApi->SetValue(&CODECAPI_AVEncMPVGOPSize, &varGOP))) {
-                    std::cerr << "  Warning: Failed to set GOP size: " << std::hex << hr << std::endl;
+                    std::stringstream ss;
+                    ss << "  Warning: Failed to set GOP size: 0x" << std::hex << hr;
+                    Log(1, ss.str());
                 }
 
                 // Disable B-frames for zero-latency reordering
@@ -286,7 +328,7 @@ namespace CaptureLib {
         }
 
         void Start(DataCallback callback) {
-            std::cout << "Starting capture session..." << std::endl;
+            Log(0, "Starting capture session...");
             m_callback = callback;
             m_running = true;
             m_startTimeNs = 0; // Reset start time
@@ -311,16 +353,22 @@ namespace CaptureLib {
                     // Explicitly set border requirement based on input parameter
                     try {
                         m_session.IsBorderRequired(m_borderRequired);
-                        std::cout << "Border required set to " << (m_borderRequired ? "true" : "false") << "." << std::endl;
+                        {
+                            std::stringstream ss;
+                            ss << "Border required set to " << (m_borderRequired ? "true" : "false") << ".";
+                            Log(0, ss.str());
+                        }
                     } catch (...) {
-                        std::cout << "IsBorderRequired not supported." << std::endl;
+                        Log(1, "IsBorderRequired not supported.");
                     }
 
                     m_framePool.FrameArrived({ this, &Impl::OnFrameArrived });
                     m_session.StartCapture();
-                    std::cout << "Capture session started on dispatcher thread." << std::endl;
+                    Log(0, "Capture session started on dispatcher thread.");
                 } catch (winrt::hresult_error const& ex) {
-                    std::cerr << "Failed to start capture on dispatcher: " << std::hex << ex.code() << std::endl;
+                    std::stringstream ss;
+                    ss << "Failed to start capture on dispatcher: 0x" << std::hex << ex.code();
+                    Log(2, ss.str());
                 }
             });
 
@@ -329,7 +377,7 @@ namespace CaptureLib {
         }
 
         void Stop() {
-            std::cout << "Stopping capture session..." << std::endl;
+            Log(0, "Stopping capture session...");
             m_running = false;
             
             if (m_workerThread.joinable()) {
@@ -497,7 +545,9 @@ namespace CaptureLib {
                 desc.BindFlags = D3D11_BIND_RENDER_TARGET;
                 hr = m_d3dDevice->CreateTexture2D(&desc, nullptr, m_nv12Texture.put());
                 if (FAILED(hr)) {
-                    std::cerr << "Failed to create input texture: " << std::hex << hr << std::endl;
+                    std::stringstream ss;
+                    ss << "Failed to create input texture: 0x" << std::hex << hr;
+                    Log(2, ss.str());
                     return;
                 }
             }
@@ -621,7 +671,9 @@ namespace CaptureLib {
                 var.ulVal = 1;
                 HRESULT hr = codecApi->SetValue(&CODECAPI_AVEncVideoForceKeyFrame, &var);
                 if (FAILED(hr)) {
-                    std::cerr << "Failed to force keyframe: " << std::hex << hr << std::endl;
+                    std::stringstream ss;
+                    ss << "Failed to force keyframe: 0x" << std::hex << hr;
+                    Log(2, ss.str());
                 }
             }
         }
@@ -699,6 +751,10 @@ namespace CaptureLib {
 
 extern "C" {
     using namespace CaptureLib;
+
+    void SetLogCallback(LogCallback callback) {
+        g_logCallback = callback;
+    }
 
     void* CreateDesktopCapture() {
         return new DesktopCapture();

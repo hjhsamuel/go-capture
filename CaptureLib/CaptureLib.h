@@ -41,7 +41,9 @@ namespace CaptureLib {
 
 extern "C" {
     typedef void(*CaptureDataCallback)(const uint8_t* data, size_t size, uint64_t timestamp);
+    typedef void(*LogCallback)(int level, const char* message);
 
+    CAPTURELIB_API void SetLogCallback(LogCallback callback);
     CAPTURELIB_API void* CreateDesktopCapture();
     CAPTURELIB_API void DestroyDesktopCapture(void* capture);
     CAPTURELIB_API bool InitializeCapture(void* capture, HMONITOR monitor, int bitrate, int fps, int gopSize, int width, int height, bool borderRequired);

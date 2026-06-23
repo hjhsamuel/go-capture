@@ -9,7 +9,9 @@ package main
 #include <stdbool.h>
 
 typedef void(*CaptureDataCallback)(const uint8_t* data, size_t size, uint64_t timestamp);
+typedef void(*LogCallback)(int level, const char* message);
 
+void SetLogCallback(LogCallback callback);
 void* CreateDesktopCapture();
 void DestroyDesktopCapture(void* capture);
 bool InitializeCapture(void* capture, HMONITOR monitor, int bitrate, int fps, int gopSize, int width, int height, bool borderRequired);
@@ -26,9 +28,14 @@ int GetMonitors(struct CMonitorInfo* monitors, int maxCount);
 
 // Gateway for CGO callback
 extern void goCaptureCallback(uint8_t* data, size_t size, uint64_t timestamp);
+extern void goLogCallback(int level, char* message);
 
 static void startCaptureWithGateway(void* capture) {
     StartCapture(capture, (CaptureDataCallback)goCaptureCallback);
+}
+
+static void setLogCallbackWithGateway() {
+    SetLogCallback((LogCallback)goLogCallback);
 }
 */
 import "C"
@@ -107,6 +114,19 @@ func goCaptureCallback(data *C.uint8_t, size C.size_t, timestamp C.uint64_t) {
 	}
 }
 
+//export goLogCallback
+func goLogCallback(level C.int, message *C.char) {
+	goMsg := C.GoString(message)
+	levelStr := "INFO"
+	switch level {
+	case 1:
+		levelStr = "WARN"
+	case 2:
+		levelStr = "ERROR"
+	}
+	fmt.Printf("[CPP-%s] %s\n", levelStr, goMsg)
+}
+
 type Monitor struct {
 	Handle    C.HMONITOR
 	Name      string
@@ -179,6 +199,8 @@ func main() {
 	defer runtime.UnlockOSThread()
 
 	fmt.Println("Golang Desktop Capture Test")
+
+	C.setLogCallbackWithGateway()
 
 	monitors := EnumerateMonitors()
 	if len(monitors) == 0 {
